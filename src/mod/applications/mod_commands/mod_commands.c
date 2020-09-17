@@ -4752,6 +4752,90 @@ SWITCH_STANDARD_API(session_record_function)
 	return SWITCH_STATUS_SUCCESS;
 }
 
+#define FORK_SYNTAX  "<uuid> <start|stop> <dest_ip> <dest_port>"
+SWITCH_STANDARD_API(audio_fork_function)
+{
+	switch_core_session_t *fsession = NULL;
+
+	char *mycmd = NULL, *argv[4] = { 0 };
+	char *uuid = NULL, *action = NULL;
+	int argc = 0;
+
+	char *dest_ip = NULL;
+	char *dest_port = NULL;
+
+	/* Default Source and Destination IP/ports */
+	//char *dest_ip = "127.0.0.1";
+	//char *dest_port = "12345";
+	
+	char *local_ip = "127.0.0.1";
+	char *local_port = "54321";
+
+	if (zstr(cmd)) {
+		goto usage;
+	}
+
+	if (!(mycmd = strdup(cmd))) {
+		goto usage;
+	}
+
+	if ((argc = switch_separate_string(mycmd, ' ', argv, (sizeof(argv) / sizeof(argv[0])))) < 2) {
+		goto usage;
+	}
+
+	if (argc < 4) {
+		goto usage;
+	}
+
+	uuid = argv[0];
+	action = argv[1];
+	dest_ip = argv[2];
+	dest_port = argv[3];
+
+	if (zstr(uuid) || zstr(action) || zstr(dest_ip) || zstr(dest_port)) {
+		goto usage;
+	}
+
+	if (!(fsession = switch_core_session_locate(uuid))) {
+		stream->write_function(stream, "-ERR Cannot locate session!\n");
+		goto done;
+	}
+
+	if (!strcasecmp(action, "start")) {
+		/* Let us reuse the unicast functionality for this audio fork */
+		if (switch_ivr_activate_unicast(fsession, local_ip, (switch_port_t) atoi(local_port), dest_ip, (switch_port_t) atoi(dest_port), "udp", "native") != SWITCH_STATUS_SUCCESS) {
+			stream->write_function(stream, "-ERR Cannot fork session !\n");
+			goto done;
+		}
+		else {
+			/* Launch the audio fork thread */
+			stream->write_function(stream, "+OK Success\n");
+			switch_audio_fork_and_stream(fsession);
+		}
+	}
+	else if (!strcasecmp(action, "stop")) {
+		switch_ivr_deactivate_unicast(fsession);
+		stream->write_function(stream, "+OK Success\n");
+	}
+	else {
+		goto usage;
+	}
+
+	goto done;
+
+usage:
+	stream->write_function(stream, "-USAGE: %s\n", FORK_SYNTAX);
+
+done:
+	if (fsession) {
+		switch_core_session_rwunlock(fsession);
+	}	
+
+	switch_safe_free(mycmd);
+	return SWITCH_STATUS_SUCCESS;
+}
+
+
 #define DISPLACE_SYNTAX "<uuid> [start|stop] <path> [<limit>] [mux]"
 SWITCH_STANDARD_API(session_displace_function)
 {
@@ -7583,6 +7667,7 @@ SWITCH_MODULE_LOAD_FUNCTION(mod_commands_load)
 	SWITCH_ADD_API(commands_api_interface, "uuid_pre_answer", "pre_answer", uuid_pre_answer_function, "<uuid>");
 	SWITCH_ADD_API(commands_api_interface, "uuid_preprocess", "Pre-process Channel", preprocess_function, PREPROCESS_SYNTAX);
 	SWITCH_ADD_API(commands_api_interface, "uuid_record", "Record session audio", session_record_function, SESS_REC_SYNTAX);
+	SWITCH_ADD_API(commands_api_interface, "uuid_fork_audio", "Fork session audio", audio_fork_function, "<uuid>");
 	SWITCH_ADD_API(commands_api_interface, "uuid_recovery_refresh", "Send a recovery_refresh", uuid_recovery_refresh, UUID_RECOVERY_REFRESH_SYNTAX);
 	SWITCH_ADD_API(commands_api_interface, "uuid_recv_dtmf", "Receive dtmf digits", uuid_recv_dtmf_function, UUID_RECV_DTMF_SYNTAX);
 	SWITCH_ADD_API(commands_api_interface, "uuid_redirect", "Send a redirect", uuid_redirect, UUID_REDIRECT_SYNTAX);
@@ -7778,6 +7863,7 @@ SWITCH_MODULE_LOAD_FUNCTION(mod_commands_load)
 	switch_console_set_complete("add uuid_phone_event ::console::list_uuid hold");
 	switch_console_set_complete("add uuid_preprocess ::console::list_uuid");
 	switch_console_set_complete("add uuid_record ::console::list_uuid ::[start:stop");
+	switch_console_set_complete("add uuid_fork_audio ::console::list_uuid");
 	switch_console_set_complete("add uuid_recovery_refresh ::console::list_uuid");
 	switch_console_set_complete("add uuid_recv_dtmf ::console::list_uuid");
 	switch_console_set_complete("add uuid_redirect ::console::list_uuid");

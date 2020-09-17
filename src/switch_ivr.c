@@ -368,6 +368,142 @@ static void unicast_thread_launch(switch_unicast_conninfo_t *conninfo)
 	switch_thread_create(&conninfo->thread, thd_attr, unicast_thread_run, conninfo, switch_core_session_get_pool(conninfo->session));
 }
 
+static void *SWITCH_THREAD_FUNC audio_fork_thread_run(switch_thread_t *thread, void *obj)
+{
+	switch_unicast_conninfo_t *conninfo = (switch_unicast_conninfo_t *) obj;
+	switch_core_session_t *session = NULL;
+
+	if (!conninfo) {
+		return NULL;
+	}
+
+	session = conninfo->session;
+
+	if (session) {
+	int stream_id = 0;
+	switch_frame_t *read_frame = NULL;
+	switch_channel_t *channel = switch_core_session_get_channel(session);
+	switch_codec_implementation_t read_impl = { 0 };
+	switch_unicast_conninfo_t *conninfo = NULL;
+	uint32_t rate = 0;
+	uint32_t bpf = 0;
+
+	while (switch_channel_ready(channel)) {
+		switch_core_session_get_read_impl(session, &read_impl);
+		switch_core_session_read_frame(session, &read_frame, SWITCH_IO_FLAG_NONE, stream_id);
+		rate = read_impl.actual_samples_per_second;
+		bpf = read_impl.decoded_bytes_per_packet;
+
+		if (switch_channel_test_flag(channel, CF_UNICAST)) {
+			if (!switch_channel_media_ready(channel)) {
+				if (switch_channel_pre_answer(channel) != SWITCH_STATUS_SUCCESS) {
+					goto done;
+				}
+			}
+
+			if (!conninfo) {
+				if (!(conninfo = switch_channel_get_private(channel, "unicast"))) {
+					switch_channel_clear_flag(channel, CF_UNICAST);
+				}
+
+				if (conninfo) {
+					unicast_thread_launch(conninfo);
+				}
+			}
+
+			if (conninfo) {
+				switch_size_t len = 0;
+				uint32_t flags = 0;
+				switch_byte_t decoded[SWITCH_RECOMMENDED_BUFFER_SIZE];
+				uint32_t dlen = sizeof(decoded);
+				switch_status_t tstatus;
+				switch_byte_t *sendbuf = NULL;
+				uint32_t sendlen = 0;
+
+				switch_assert(read_frame);
+
+				if (switch_test_flag(read_frame, SFF_CNG)) {
+					sendlen = bpf;
+					switch_assert(sendlen <= SWITCH_RECOMMENDED_BUFFER_SIZE);
+					memset(decoded, 255, sendlen);
+					sendbuf = decoded;
+					tstatus = SWITCH_STATUS_SUCCESS;
+				}
+				else {
+					if (switch_test_flag(conninfo, SUF_NATIVE)) {
+						 tstatus = SWITCH_STATUS_NOOP;
+					}
+					else {
+						switch_codec_t *read_codec = switch_core_session_get_read_codec(session);
+						tstatus = switch_core_codec_decode(read_codec, &conninfo->read_codec, read_frame->data, read_frame->datalen, read_impl.actual_samples_per_second, decoded, &dlen, &rate, &flags);
+					}
+
+					switch (tstatus) {
+						case SWITCH_STATUS_NOOP:
+						case SWITCH_STATUS_BREAK:
+							sendbuf = read_frame->packet;
+							sendlen = read_frame->packetlen;
+							tstatus = SWITCH_STATUS_SUCCESS;
+							break;
+						case SWITCH_STATUS_SUCCESS:
+							sendbuf = decoded;
+							sendlen = dlen;
+							tstatus = SWITCH_STATUS_SUCCESS;
+							break;
+						default:
+							switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_NOTICE, "Codec Error\n");
+							switch_ivr_deactivate_unicast(session);
+							break;
+					}
+				}
+
+				if (tstatus == SWITCH_STATUS_SUCCESS) {
+					len = sendlen;
+					if (switch_socket_sendto(conninfo->socket, conninfo->remote_addr, 0, (void *) sendbuf, &len) != SWITCH_STATUS_SUCCESS) {
+						switch_ivr_deactivate_unicast(session);
+					}
+				}
+			}
+		}
+	}
+
+done:
+	switch_core_session_rwunlock(session);
+        }
+
+	switch_clear_flag_locked(conninfo, SUF_THREAD_RUNNING);
+
+	return NULL;
+}
+
+static void audio_fork_thread_launch(switch_unicast_conninfo_t *conninfo)
+{
+	switch_threadattr_t *thd_attr = NULL;
+
+	switch_threadattr_create(&thd_attr, switch_core_session_get_pool(conninfo->session));
+	switch_threadattr_stacksize_set(thd_attr, SWITCH_THREAD_STACKSIZE);
+	switch_set_flag_locked(conninfo, SUF_THREAD_RUNNING);
+	switch_thread_create(&conninfo->thread, thd_attr, audio_fork_thread_run, conninfo, switch_core_session_get_pool(conninfo->session));
+}
+
+
+SWITCH_DECLARE(void) switch_audio_fork_and_stream(switch_core_session_t *session)
+{
+	switch_channel_t *channel = switch_core_session_get_channel(session);
+	switch_unicast_conninfo_t *conninfo = NULL;
+
+	if(switch_channel_ready(channel)) {
+		if (!(conninfo = switch_channel_get_private(channel, "unicast"))) {
+			switch_channel_clear_flag(channel, CF_UNICAST);
+			return;
+		}
+
+		audio_fork_thread_launch(conninfo);
+	}
+
+	return;
+}
+
 SWITCH_DECLARE(switch_status_t) switch_ivr_deactivate_unicast(switch_core_session_t *session)
 {
 	switch_channel_t *channel = switch_core_session_get_channel(session);

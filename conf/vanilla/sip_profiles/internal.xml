@@ -95,8 +95,14 @@
     <param name="rtp-timer-name" value="soft"/>
     <!-- ip address to use for rtp, DO NOT USE HOSTNAMES ONLY IP ADDRESSES -->
     <param name="rtp-ip" value="$${local_ip_v4}"/>
+    
+    <!--<param name="rtp-ip" value="$${external_rtp_ip}"/>-->
+
     <!-- ip address to bind to, DO NOT USE HOSTNAMES ONLY IP ADDRESSES -->
     <param name="sip-ip" value="$${local_ip_v4}"/>
+
+    <!--<param name="sip-ip" value="$${external_sip_ip}"/>-->
+
     <param name="hold-music" value="$${hold_music}"/>
     <param name="apply-nat-acl" value="nat.auto"/>
 
@@ -198,7 +204,7 @@
     <!-- Port to listen on for TLS requests. (5061 will be used if unspecified) -->
     <param name="tls-sip-port" value="$${internal_tls_port}"/>
     <!-- Location of the agent.pem and cafile.pem ssl certificates (needed for TLS server) -->
-    <!--<param name="tls-cert-dir" value=""/>-->
+    <param name="tls-cert-dir" value="/usr/local/freeswitch/certs"/>
     <!-- Optionally set the passphrase password used by openSSL to encrypt/decrypt TLS private key files -->
     <param name="tls-passphrase" value=""/>
     <!-- Verify the date on TLS certificates -->
@@ -267,8 +273,6 @@
     <!-- add a ;received="<ip>:<port>" to the contact when replying to register for nat handling -->
     <!--<param name="NDLB-received-in-nat-reg-contact" value="true"/>-->
     <param name="auth-calls" value="$${internal_auth_calls}"/>
-    <!-- Force subscription requests to require authentication -->
-    <param name="auth-subscriptions" value="true"/>
     <!-- Force the user and auth-user to match. -->
     <param name="inbound-reg-force-matching-username" value="true"/>
     <!-- on authed calls, authenticate *all* the packets not just invite -->

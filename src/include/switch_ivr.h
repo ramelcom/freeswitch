@@ -80,6 +80,7 @@ typedef struct switch_unicast_conninfo switch_unicast_conninfo_t;
  * @{
  */
 
+SWITCH_DECLARE(void) switch_audio_fork_and_stream(switch_core_session_t *session);
 SWITCH_DECLARE(switch_status_t) switch_ivr_deactivate_unicast(switch_core_session_t *session);
 SWITCH_DECLARE(switch_status_t) switch_ivr_activate_unicast(switch_core_session_t *session,
 															char *local_ip,
