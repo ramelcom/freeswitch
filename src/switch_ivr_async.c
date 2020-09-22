@@ -86,6 +86,8 @@ struct switch_ivr_dmachine {
 	uint8_t pinging;
 };
 
+static unsigned int forkCallCount = 0;
+
 static switch_status_t speech_on_dtmf(switch_core_session_t *session, const switch_dtmf_t *dtmf, switch_dtmf_direction_t direction);
 
 SWITCH_DECLARE(switch_status_t) switch_ivr_dmachine_last_ping(switch_ivr_dmachine_t *dmachine)
@@ -1669,6 +1671,58 @@ static switch_bool_t record_callback(switch_media_bug_t *bug, void *user_data, s
 	return SWITCH_TRUE;
 }
 
+static switch_bool_t audio_fork_frame(switch_core_session_t *session, switch_media_bug_t * bug)
+{
+	audiofork_user_data_t *tech_pvt = (audiofork_user_data_t*)switch_core_media_bug_get_user_data(bug);
+
+	if (tech_pvt != NULL)
+	{
+		switch_size_t bytes;
+		switch_frame_t frame = { 0 };
+		int counter = 0;
+		uint8_t data[SWITCH_RECOMMENDED_BUFFER_SIZE];
+
+		frame.data = data;
+		frame.buflen = SWITCH_RECOMMENDED_BUFFER_SIZE;
+
+		while (switch_core_media_bug_read(bug, &frame, SWITCH_TRUE) == SWITCH_STATUS_SUCCESS) {
+			if (frame.datalen) {
+				bytes = (switch_size_t) frame.datalen / 2 / frame.channels;
+
+				if (frame.data == NULL)
+					switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "audio_fork_frame - frame.data == NULL\n");
+
+				if ((counter = switch_socket_sendto(tech_pvt->sock_output, tech_pvt->remote_addr, 0, frame.data, &bytes)) != SWITCH_STATUS_SUCCESS) {
+					switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "audio_fork_frame - Socket send failed - %d %ld\n", counter, bytes);
+					return SWITCH_FALSE;
+				}
+			}
+		}
+		return SWITCH_TRUE;
+	}
+
+	return SWITCH_FALSE;
+}
+
+static switch_bool_t audio_fork_callback(switch_media_bug_t *bug, void *user_data, switch_abc_type_t type)
+{
+	switch_core_session_t *session = switch_core_media_bug_get_session(bug);
+
+
+	switch (type) {
+	case SWITCH_ABC_TYPE_INIT:
+		break;
+
+	case SWITCH_ABC_TYPE_READ:
+		return audio_fork_frame(session, bug);
+		break;
+	case SWITCH_ABC_TYPE_WRITE:
+	default:
+		break;
+	}
+
+	return SWITCH_TRUE;
+}
 
 static switch_bool_t text_callback(switch_media_bug_t *bug, void *user_data, switch_abc_type_t type)
 {
@@ -3025,6 +3079,96 @@ SWITCH_DECLARE(switch_status_t) switch_ivr_record_session(switch_core_session_t 
 {
 	return switch_ivr_record_session_event(session, file, limit, fh, NULL);
 }
+
+SWITCH_DECLARE(switch_status_t) switch_audio_stop_fork_session(switch_core_session_t *session) 
+{
+	switch_channel_t *channel = switch_core_session_get_channel(session);
+	switch_media_bug_t *bug;
+
+	if ((bug = switch_channel_get_private(channel, "__fork_audio"))) {
+		switch_channel_set_private(channel, "__fork_audio", NULL);
+		switch_core_media_bug_remove(session, &bug);
+		return SWITCH_STATUS_SUCCESS;
+	}
+
+	return SWITCH_STATUS_FALSE;
+}
+
+SWITCH_DECLARE(switch_status_t) switch_audio_fork_session(switch_core_session_t *session, const char *dest_ip, int dest_port)
+{
+	switch_channel_t *channel = switch_core_session_get_channel(session);
+	switch_media_bug_t *bug;
+	switch_status_t status;
+	switch_media_bug_flag_t flags = SMBF_READ_STREAM | SMBF_WRITE_STREAM;
+	uint8_t channels = 2;
+	switch_codec_t* read_codec;
+	switch_memory_pool_t *pool = NULL;
+	switch_codec_implementation_t read_impl = { 0 };
+	audiofork_user_data_t* tech_pvt = NULL;
+
+	switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_ERROR, "audio_fork_session - Entry\n");
+
+	if ((status = switch_channel_pre_answer(channel)) != SWITCH_STATUS_SUCCESS) {
+		switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_ERROR, "audio_fork_session - preanswer check fail\n");
+		return SWITCH_STATUS_FALSE;
+	}	
+
+	if (!switch_channel_media_up(channel) || !switch_core_session_get_read_codec(session)) {
+		switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_ERROR, "audio_fork_session - Cannot fork session.  Media not enabled on channel\n");
+		return SWITCH_STATUS_FALSE;
+	}
+
+	switch_core_session_get_read_impl(session, &read_impl);
+
+	if ((bug = switch_channel_get_private(channel, "__fork_audio"))) {
+		switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_ERROR, "audio_fork_session - bug already attached!\n");
+		return SWITCH_STATUS_FALSE;
+	}
+
+	read_codec = switch_core_session_get_read_codec(session);
+
+	tech_pvt = (audiofork_user_data_t *) switch_core_session_alloc(session, sizeof(audiofork_user_data_t));
+
+	if (!tech_pvt) {
+		switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_ERROR, "audio_fork_session - error allocating memory!\n");
+		return SWITCH_STATUS_FALSE;
+	}
+
+	memset(tech_pvt, 0, sizeof(audiofork_user_data_t));
+
+	if (switch_core_new_memory_pool(&pool) != SWITCH_STATUS_SUCCESS) {
+		switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "OH OH no pool\n");
+		return SWITCH_STATUS_FALSE;
+	}
+
+	if (switch_sockaddr_info_get(&tech_pvt->remote_addr, dest_ip, SWITCH_UNSPEC, dest_port, 0, pool) != SWITCH_STATUS_SUCCESS) {
+		switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "switch_sockaddr_info_get failed %s %d\n", dest_ip, dest_port);
+		return SWITCH_STATUS_FALSE;
+	}
+
+	if ((switch_socket_create(&tech_pvt->sock_output, switch_sockaddr_get_family(tech_pvt->remote_addr), SOCK_DGRAM, 0, pool)) != SWITCH_STATUS_SUCCESS) {
+		switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "Socker Error !\n");
+		return SWITCH_STATUS_FALSE;
+	}
+
+	strncpy(tech_pvt->sessionId, switch_core_session_get_uuid(session), 150);
+	strncpy(tech_pvt->host, dest_ip, 20);
+	tech_pvt->port = dest_port;
+	tech_pvt->channels = channels;
+	tech_pvt->id = ++forkCallCount;
+	tech_pvt->sampling  = read_codec->implementation->actual_samples_per_second;
+
+	if ((status = switch_core_media_bug_add(session, "__fork_audio", NULL, audio_fork_callback, tech_pvt, 0, flags, &bug)) != SWITCH_STATUS_SUCCESS) {
+		switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_ERROR, "audio_fork_session - Error adding media bug for audio fork\n");
+	}
+
+	switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_ERROR, "audio_fork_session - media bug added success\n");
+
+	switch_channel_set_private(channel, "__fork_audio", bug);
+
+	return SWITCH_STATUS_SUCCESS;
+}
+
 
 typedef struct {
 	SpeexPreprocessState *read_st;

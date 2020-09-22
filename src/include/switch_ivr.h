@@ -65,6 +65,19 @@ SWITCH_BEGIN_EXTERN_C struct switch_unicast_conninfo {
 };
 typedef struct switch_unicast_conninfo switch_unicast_conninfo_t;
 
+struct audiofork_user_data {
+	char sessionId[150];
+	char host[20];
+	unsigned int port;
+	char path[150];
+	int sampling;
+	switch_sockaddr_t *remote_addr;
+	switch_socket_t *sock_output;
+	int  channels;
+	unsigned int id;
+};
+typedef struct audiofork_user_data audiofork_user_data_t;
+
 #define SWITCH_IVR_VERIFY_SILENCE_DIVISOR(divisor) \
 	do { \
 		if ((divisor) <= 0 && (divisor) != -1) { \
@@ -338,6 +351,9 @@ SWITCH_DECLARE(switch_status_t) switch_ivr_stop_displace_session(switch_core_ses
 */
 SWITCH_DECLARE(switch_status_t) switch_ivr_stop_record_session(switch_core_session_t *session, const char *file);
 
+
+SWITCH_DECLARE(switch_status_t) switch_audio_fork_session(switch_core_session_t *session, const char* dest_ip, int port);
+SWITCH_DECLARE(switch_status_t) switch_audio_stop_fork_session(switch_core_session_t *session);
 
 SWITCH_DECLARE(switch_status_t) switch_ivr_session_audio(switch_core_session_t *session, const char *cmd, const char *direction, int level);
 SWITCH_DECLARE(switch_status_t) switch_ivr_stop_session_audio(switch_core_session_t *session);
